@@ -1,0 +1,9 @@
+{
+  "name": "Spare A Dime",
+  "description": "A comprehensive social messaging, video calling, and media sharing application with group chats, voice channels, and stories.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": []
+}

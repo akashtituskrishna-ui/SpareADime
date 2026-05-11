@@ -1,0 +1,147 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isSignedIn() { return request.auth != null; }
+    function str(val, min, max) { return val is string && val.size() >= min && val.size() <= max; }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'createdAt']) &&
+        data.keys().size() <= 7 &&
+        str(data.uid, 1, 128) &&
+        data.uid == request.auth.uid &&
+        str(data.displayName, 1, 128) &&
+        (data.keys().hasAll(['photoURL']) ? str(data.photoURL, 0, 900000) : true) &&
+        (data.keys().hasAll(['phoneNumber']) ? str(data.phoneNumber, 0, 50) : true) &&
+        (data.keys().hasAll(['bio']) ? str(data.bio, 0, 500) : true) &&
+        (data.keys().hasAll(['isAdmin']) ? data.isAdmin is bool : true) &&
+        data.createdAt == request.time;
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn();
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() &&
+                    isValidId(userId) &&
+                    userId == request.auth.uid &&
+                    isValidUser(incoming()) &&
+                    (!incoming().keys().hasAny(['isAdmin']) || incoming().isAdmin == false);
+      allow update: if isSignedIn() &&
+                    userId == request.auth.uid &&
+                    incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'bio', 'phoneNumber']) &&
+                    str(incoming().displayName, 1, 128);
+    }
+
+    function isValidChat(data) {
+      return data.keys().hasAll(['id', 'type', 'participantIds', 'createdAt', 'updatedAt']) &&
+        data.keys().size() <= 7 &&
+        str(data.id, 1, 128) &&
+        (data.type == 'direct' || data.type == 'group') &&
+        data.participantIds is list && data.participantIds.size() >= 1 && data.participantIds.size() <= 200 &&
+        request.auth.uid in data.participantIds &&
+        (data.keys().hasAll(['name']) ? str(data.name, 0, 128) : true) &&
+        (data.keys().hasAll(['voiceChannelActive']) ? data.voiceChannelActive is bool : true) &&
+        data.createdAt == request.time &&
+        data.updatedAt == request.time;
+    }
+
+    match /chats/{chatId} {
+      allow get: if isSignedIn() && request.auth.uid in existing().participantIds;
+      allow list: if isSignedIn() && request.auth.uid in resource.data.participantIds;
+      allow create: if isSignedIn() &&
+                    isValidId(chatId) &&
+                    isValidChat(incoming()) &&
+                    incoming().id == chatId;
+      allow update: if isSignedIn() &&
+                    request.auth.uid in existing().participantIds &&
+                    // incoming().diff(existing()).affectedKeys().hasAny(...) would allow anything as long as one is present. Use hasOnly.
+                    incoming().diff(existing()).affectedKeys().hasOnly(['participantIds', 'name', 'voiceChannelActive', 'updatedAt']) &&
+                    incoming().updatedAt == request.time;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['id', 'chatId', 'senderId', 'createdAt']) &&
+        data.keys().size() <= 10 &&
+        str(data.id, 1, 128) &&
+        str(data.chatId, 1, 128) &&
+        data.senderId == request.auth.uid &&
+        (data.keys().hasAll(['text']) ? str(data.text, 0, 4000) : true) &&
+        (data.keys().hasAll(['mediaUrl']) ? str(data.mediaUrl, 0, 1024) : true) &&
+        (data.keys().hasAll(['audioData']) ? str(data.audioData, 0, 900000) : true) &&
+        (data.keys().hasAll(['reactions']) ? data.reactions is map : true) &&
+        (data.keys().hasAll(['readBy']) ? data.readBy is map : true) &&
+        data.createdAt == request.time;
+    }
+
+    match /chats/{chatId}/messages/{messageId} {
+      allow read: if isSignedIn() && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds;
+      allow create: if isSignedIn() &&
+                    isValidId(messageId) &&
+                    request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds &&
+                    isValidMessage(incoming()) &&
+                    incoming().chatId == chatId;
+      allow update: if isSignedIn() &&
+                    request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds &&
+                    incoming().diff(existing()).affectedKeys().hasOnly(['reactions', 'readBy']) &&
+                    (incoming().keys().hasAll(['reactions']) ? incoming().reactions is map : true) &&
+                    (incoming().keys().hasAll(['readBy']) ? incoming().readBy is map : true);
+    }
+
+    function isValidSignal(data) {
+      return data.keys().hasAll(['chatId', 'senderId', 'signal', 'createdAt']) &&
+        data.keys().size() <= 4 &&
+        str(data.chatId, 1, 128) &&
+        data.senderId == request.auth.uid &&
+        str(data.signal, 1, 8000) &&
+        data.createdAt == request.time;
+    }
+
+    match /chats/{chatId}/signals/{signalId} {
+      allow read: if isSignedIn() && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds;
+      allow create: if isSignedIn() &&
+                    request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds &&
+                    isValidSignal(incoming()) &&
+                    incoming().chatId == chatId;
+      allow delete: if isSignedIn() && existing().senderId == request.auth.uid;
+    }
+
+    function isValidPost(data) {
+      return data.keys().hasAll(['id', 'authorId', 'createdAt']) &&
+        data.authorId == request.auth.uid &&
+        (data.keys().hasAll(['mediaUrl']) ? str(data.mediaUrl, 0, 1024) : true) &&
+        (data.keys().hasAll(['caption']) ? str(data.caption, 0, 2000) : true) &&
+        data.createdAt == request.time;
+    }
+
+    match /posts/{postId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(postId) && isValidPost(incoming());
+      allow update: if isSignedIn() && existing().authorId == request.auth.uid &&
+                    incoming().diff(existing()).affectedKeys().hasOnly(['caption']) && str(incoming().caption, 0, 2000);
+      allow delete: if isSignedIn() && existing().authorId == request.auth.uid;
+    }
+
+    function isValidStory(data) {
+      return data.keys().hasAll(['id', 'authorId', 'mediaUrl', 'expiresAt', 'createdAt']) &&
+        data.authorId == request.auth.uid &&
+        str(data.mediaUrl, 1, 1024) &&
+        (data.keys().hasAll(['songUrl']) ? str(data.songUrl, 0, 1024) : true) &&
+        data.createdAt == request.time &&
+        data.expiresAt is string;
+    }
+
+    match /stories/{storyId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(storyId) && isValidStory(incoming());
+      allow delete: if isSignedIn() && existing().authorId == request.auth.uid;
+    }
+  }
+}
